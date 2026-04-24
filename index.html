@@ -3797,8 +3797,9 @@ select.ci{background:var(--gray1);cursor:pointer}
       <div class="fg"><label class="fl">직급/부서</label><div class="auto-filled-wrap"><input class="fi auto-filled" id="te-dept" type="text" readonly><span class="lock-tag">🔒 자동</span></div></div>
       <div class="fg full"><label class="fl">신청 기간 <span class="req">*</span></label>
         <div style="display:flex;align-items:center;gap:8px">
-          <input class="fi" id="te-from-date" type="date" style="flex:1"> <span style="color:var(--gray4)">~</span> <input class="fi" id="te-to-date" type="date" style="flex:1">
+          <input class="fi" id="te-from-date" type="date" style="flex:1" onchange="teValidateDates()"> <span style="color:var(--gray4)">~</span> <input class="fi" id="te-to-date" type="date" style="flex:1" onchange="teValidateDates()">
         </div>
+        <div id="te-date-hint" style="display:none;margin-top:6px;padding:7px 10px;border-radius:var(--r);font-size:11px;font-weight:600;line-height:1.4"></div>
       </div>
     </div>
     <!-- 교통비 내역 행 -->
@@ -5658,17 +5659,8 @@ function _showGraceClosedAlert(pageId) {
 }
 
 function showPage(id, btn, pushHistory=true) {
-  // 그레이스 기간 체크: 신청 마감 후 5일간 비용 신청(및 관련 대시보드) 진입 차단
-  // 단, 당일 기한후신청 세션이 유효하면 통과
-  if (_GRACE_BLOCK_PAGES[id]) {
-    try {
-      const s = computeCycleSchedule(_GRACE_BLOCK_PAGES[id], 'applicant');
-      if (s.isInGracePeriod && !_hasGraceBypass(id)) {
-        _showGraceClosedAlert(id);
-        return;
-      }
-    } catch(e) {}
-  }
+  // 그레이스 기간 메뉴 차단 제거 — 대신 페이지 내 인라인 힌트로 안내
+  // (ceAutoSetMonth / sdValidatePayDate / teValidateDates 등이 신청 기간 외 표시)
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));
   document.querySelectorAll('.ni').forEach(n=>n.classList.remove('on'));
   const pageEl = document.getElementById('pg-'+id);
@@ -21807,7 +21799,7 @@ function addTERow() {
   const row = document.createElement('div');
   row.style.cssText = 'display:grid;grid-template-columns:90px 1fr 1fr 90px 80px 28px;gap:4px;padding:5px 8px;border-bottom:1px solid var(--gray2);align-items:center';
   row.innerHTML = `
-    <input class="ci" type="date" style="font-size:11px" onchange="calcTETotal()">
+    <input class="ci" type="date" style="font-size:11px" onchange="calcTETotal();teValidateRowDate(this)">
     <input class="ci" type="text" placeholder="출발지" style="font-size:11px">
     <input class="ci" type="text" placeholder="도착지" style="font-size:11px">
     <select class="ci" style="font-size:11px">
@@ -21817,6 +21809,73 @@ function addTERow() {
     <button onclick="this.closest('div').remove();calcTETotal()" style="background:none;border:none;cursor:pointer;color:var(--err);font-size:15px;padding:0;line-height:1">×</button>
   `;
   container.appendChild(row);
+}
+
+// ── 교통비 귀속월 계산 (매월 8일 마감 기준) ──
+//   당월 1~8일  : 전월 귀속분 신청 기간
+//   당월 9일~말일: 마감 지남 → 당월 귀속분 (다음 사이클 선반영)
+function teGetBillingMonth() {
+  const today = new Date();
+  let bY, bM;
+  if (today.getDate() > 8) {
+    bY = today.getFullYear();
+    bM = today.getMonth() + 1;
+  } else {
+    bY = today.getMonth() === 0 ? today.getFullYear() - 1 : today.getFullYear();
+    bM = today.getMonth() === 0 ? 12 : today.getMonth();
+  }
+  return { bY, bM, bStart: new Date(bY, bM - 1, 1), bEnd: new Date(bY, bM, 0) };
+}
+
+// ── 교통비 신청 기간(from/to) 검증 ──
+function teValidateDates() {
+  const hint   = document.getElementById('te-date-hint');
+  const fromEl = document.getElementById('te-from-date');
+  const toEl   = document.getElementById('te-to-date');
+  if (!hint || !fromEl || !toEl) return;
+
+  const fromVal = fromEl.value, toVal = toEl.value;
+  if (!fromVal && !toVal) { hint.style.display = 'none'; fromEl.style.borderColor=''; toEl.style.borderColor=''; return; }
+
+  const { bY, bM, bStart, bEnd } = teGetBillingMonth();
+  const bStartStr = `${bY}년 ${bM}월 1일`;
+  const bEndStr   = `${bY}년 ${bM}월 ${bEnd.getDate()}일`;
+
+  const checkDate = (val) => {
+    if (!val) return true;
+    const d = new Date(val + 'T00:00:00');
+    return d >= bStart && d <= bEnd;
+  };
+  const okFrom = checkDate(fromVal);
+  const okTo   = checkDate(toVal);
+
+  hint.style.display = '';
+  if (!okFrom || !okTo) {
+    hint.style.background = '#fee2e2';
+    hint.style.color      = '#991b1b';
+    hint.style.border     = '1px solid #fca5a5';
+    hint.innerHTML = `❌ 귀속월(${bStartStr} ~ ${bEndStr}) 범위를 벗어납니다.<br>
+      <span style="font-size:10px">현재 신청 가능한 기간은 ${bY}년 ${bM}월 사용분입니다.</span>`;
+    if (!okFrom) fromEl.style.borderColor = '#ef4444'; else fromEl.style.borderColor = '';
+    if (!okTo)   toEl.style.borderColor   = '#ef4444'; else toEl.style.borderColor   = '';
+  } else {
+    hint.style.background = '#f0fdf4';
+    hint.style.color      = '#059669';
+    hint.style.border     = '1px solid #86efac';
+    hint.innerHTML = `✓ 귀속월(${bStartStr} ~ ${bEndStr}) 내 정상 신청`;
+    fromEl.style.borderColor = '#4ade80';
+    toEl.style.borderColor   = '#4ade80';
+  }
+}
+
+// ── 교통비 행별 날짜 검증 (행의 날짜 입력 옆에 붉은 테두리로 안내) ──
+function teValidateRowDate(input) {
+  if (!input?.value) { input.style.borderColor = ''; return; }
+  const { bStart, bEnd } = teGetBillingMonth();
+  const d = new Date(input.value + 'T00:00:00');
+  input.style.borderColor = (d >= bStart && d <= bEnd) ? '#4ade80' : '#ef4444';
+  // 전체 기간 힌트도 동기화
+  teValidateDates();
 }
 
 function calcTETotal() {
@@ -23605,11 +23664,21 @@ function sdValidatePayDate() {
   if (!val) { hint.style.display = 'none'; input.style.borderColor = ''; return; }
 
   const today  = new Date();
-  // 귀속월 = 이번 달 신청 → 전월 (지난달 1일~말일)
-  const bY     = today.getMonth() === 0 ? today.getFullYear() - 1 : today.getFullYear();
-  const bM     = today.getMonth() === 0 ? 12 : today.getMonth(); // 1-indexed
+  // 통신비·자기계발비 마감: 매월 23일
+  //   - 당월 1~23일  : 전월 귀속분 신청 기간
+  //   - 당월 24일~말일: 이미 당월 마감 지남 → 다음 달 마감 사이클(당월 귀속분) 신청 기간
+  let bY, bM; // 1-indexed
+  if (today.getDate() > 23) {
+    // 마감 지남 → 귀속월 = 당월
+    bY = today.getFullYear();
+    bM = today.getMonth() + 1;
+  } else {
+    // 마감 전 → 귀속월 = 전월
+    bY = today.getMonth() === 0 ? today.getFullYear() - 1 : today.getFullYear();
+    bM = today.getMonth() === 0 ? 12 : today.getMonth();
+  }
   const bStart = new Date(bY, bM - 1, 1);
-  const bEnd   = new Date(bY, bM, 0); // 전월 말일
+  const bEnd   = new Date(bY, bM, 0); // 귀속월 말일
 
   const payDt  = new Date(val + 'T00:00:00');
   const bStartStr = `${bY}년 ${bM}월 1일`;
@@ -23836,8 +23905,15 @@ function sdSubmit(){
   if (completeDate && claimType !== '기간권회차청구') {
     const payDt  = new Date(completeDate + 'T00:00:00');
     const today  = new Date();
-    const bY     = today.getMonth() === 0 ? today.getFullYear()-1 : today.getFullYear();
-    const bM     = today.getMonth() === 0 ? 12 : today.getMonth();
+    // 통신비·자기계발비 마감: 매월 23일 (sdValidatePayDate와 동일 규칙)
+    let bY, bM;
+    if (today.getDate() > 23) {
+      bY = today.getFullYear();
+      bM = today.getMonth() + 1;
+    } else {
+      bY = today.getMonth() === 0 ? today.getFullYear()-1 : today.getFullYear();
+      bM = today.getMonth() === 0 ? 12 : today.getMonth();
+    }
     const bStart = new Date(bY, bM-1, 1);
     const bEnd   = new Date(bY, bM, 0);
     if (payDt < bStart || payDt > bEnd) {
@@ -23995,6 +24071,29 @@ function submitExpense(type, extraData) {
   }
 
   if (errorMsg) { alert('⚠️ ' + errorMsg); return; }
+
+  // 교통비: 제출 시 귀속월 범위 최종 차단 (인라인 힌트와 동일 규칙)
+  if (type === 'transport-expense') {
+    const fromVal = document.getElementById('te-from-date')?.value;
+    const toVal   = document.getElementById('te-to-date')?.value;
+    const rowDates = Array.from(document.querySelectorAll('#te-rows > div'))
+      .map(r => r.querySelector('input[type="date"]')?.value).filter(Boolean);
+    if (typeof teGetBillingMonth === 'function') {
+      const { bY, bM, bStart, bEnd } = teGetBillingMonth();
+      const outOfRange = [fromVal, toVal, ...rowDates].some(v => {
+        if (!v) return false;
+        const d = new Date(v + 'T00:00:00');
+        return d < bStart || d > bEnd;
+      });
+      if (outOfRange) {
+        if (typeof teValidateDates === 'function') teValidateDates();
+        const hint = document.getElementById('te-date-hint');
+        if (hint) hint.scrollIntoView({ behavior:'smooth', block:'center' });
+        showToast(`날짜가 귀속월(${bY}.${String(bM).padStart(2,'0')}) 범위를 벗어납니다.`, 'err');
+        return;
+      }
+    }
+  }
 
   // 신청 시점의 "기한 내/기한 후" 판정
   // comm-expense / self-develop: 25일 사이클 / transport-expense: 10일 사이클
